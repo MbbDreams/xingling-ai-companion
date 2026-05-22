@@ -1,0 +1,13 @@
+{
+  "name": "xingling-ai-companion-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Static MVP prototype for Xingling AI Companion.",
+  "scripts": {
+    "dev": "python3 -m http.server 4173",
+    "db:up": "docker compose up -d postgres redis",
+    "backend:dev": "cd backend && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+    "check": "find src -name '*.js' -exec node --check {} \\;"
+  }
+}
