@@ -1,6 +1,8 @@
+version: '3.8'
+
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:15-alpine
     container_name: xingling-postgres
     environment:
       POSTGRES_USER: xingling
@@ -9,13 +11,13 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - xingling_postgres_data:/var/lib/postgresql/data
-      - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U xingling -d xingling_ai"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -23,13 +25,15 @@ services:
     ports:
       - "6380:6379"
     volumes:
-      - xingling_redis_data:/data
+      - redis_data:/data
+    command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
 volumes:
-  xingling_postgres_data:
-  xingling_redis_data:
+  postgres_data:
+  redis_data:

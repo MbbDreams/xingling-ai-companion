@@ -88,11 +88,19 @@ class DailyTask {
 class TaskCompleteResponse {
   final bool success;
   final int coinsEarned;
+  final int totalCoins;
+  final int? intimacyGained;
+  final int? totalIntimacy;
+  final String? currentLevel;
   final String message;
 
   TaskCompleteResponse({
     required this.success,
     required this.coinsEarned,
+    this.totalCoins = 0,
+    this.intimacyGained,
+    this.totalIntimacy,
+    this.currentLevel,
     required this.message,
   });
 
@@ -100,6 +108,10 @@ class TaskCompleteResponse {
     return TaskCompleteResponse(
       success: json['success'] ?? true,
       coinsEarned: json['coins_earned'] ?? json['coins'] ?? 0,
+      totalCoins: json['total_coins'] ?? 0,
+      intimacyGained: json['intimacy_gained'],
+      totalIntimacy: json['total_intimacy'],
+      currentLevel: json['current_level'],
       message: json['message'] ?? '任务完成',
     );
   }

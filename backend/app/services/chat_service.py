@@ -69,10 +69,14 @@ class ChatService:
         )
         self.session.add(ai_message)
         
-        # 计算亲密度增长
+        # 计算亲密度增长（无上限，每100升一级）
         old_intimacy = companion.intimacy
-        companion.intimacy = min(companion.intimacy + 1, 100)
-        intimacy_gained = companion.intimacy - old_intimacy
+        companion.intimacy += 1
+        intimacy_gained = 1
+        
+        # 更新等级
+        new_level = int(companion.intimacy / 100) + 1
+        companion.level = f"Lv.{new_level}"
         
         await self.session.flush()
         await self.session.commit()

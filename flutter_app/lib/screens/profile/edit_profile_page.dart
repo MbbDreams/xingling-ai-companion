@@ -22,8 +22,15 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
   
   String? _gender;
   String? _birthday;
+  String? _selectedAvatar;
   bool _isLoading = false;
   bool _hasChanges = false;
+
+  // 预设头像列表
+  static const _presetAvatars = [
+    '🌙', '⭐', '🌸', '🦋', '🐱', '🦊',
+    '🐉', '🌊', '🔥', '💜', '🪐', '✨',
+  ];
 
   @override
   void initState() {
@@ -36,6 +43,7 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
     _websiteController = TextEditingController(text: user?.website ?? '');
     _gender = user?.gender;
     _birthday = user?.birthday;
+    _selectedAvatar = user?.avatar;
 
     // 监听变化
     _nicknameController.addListener(_onChanged);
@@ -59,6 +67,62 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
     _locationController.dispose();
     _websiteController.dispose();
     super.dispose();
+  }
+
+  void _showAvatarPicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0A0F24),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '选择头像',
+              style: TextStyle(color: AppTheme.text, fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 20),
+            Wrap(
+              spacing: 16,
+              runSpacing: 16,
+              children: _presetAvatars.map((emoji) {
+                final isSelected = _selectedAvatar == emoji;
+                return GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _selectedAvatar = emoji;
+                      _hasChanges = true;
+                    });
+                    Navigator.pop(context);
+                  },
+                  child: Container(
+                    width: 60,
+                    height: 60,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isSelected
+                          ? AppTheme.primary.withOpacity(0.3)
+                          : const Color(0x14FFFFFF),
+                      border: Border.all(
+                        color: isSelected ? AppTheme.primary : AppTheme.line,
+                        width: isSelected ? 2 : 1,
+                      ),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(emoji, style: const TextStyle(fontSize: 28)),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _selectBirthday() async {
@@ -97,6 +161,7 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
 
     final success = await ref.read(authProvider.notifier).updateProfile(
       nickname: _nicknameController.text,
+      avatar: _selectedAvatar,
       email: _emailController.text.isEmpty ? null : _emailController.text,
       gender: _gender,
       birthday: _birthday,
@@ -150,7 +215,8 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
           padding: const EdgeInsets.all(16),
           children: [
             // 头像
-            Center(
+            GestureDetector(
+              onTap: _showAvatarPicker,
               child: Stack(
                 children: [
                   Container(
@@ -166,10 +232,13 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
                         ),
                       ],
                     ),
-                    child: const CircleAvatar(
+                    child: CircleAvatar(
                       radius: 48,
-                      backgroundColor: Color(0xFF1A2549),
-                      child: Text('🌙', style: TextStyle(fontSize: 40)),
+                      backgroundColor: const Color(0xFF1A2549),
+                      child: Text(
+                        _selectedAvatar ?? '🌙',
+                        style: const TextStyle(fontSize: 40),
+                      ),
                     ),
                   ),
                   Positioned(

@@ -33,6 +33,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     ProfileScreen(),
   ];
 
+  /// 底部导航栏高度（含 SafeArea）
+  static const double _bottomNavHeight = 80;
+
   @override
   void initState() {
     super.initState();
@@ -95,7 +98,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         child: Stack(
           children: [
             // 动态星空背景
-            Positioned.fill(
+            const Positioned.fill(
               child: AnimatedStarField(),
             ),
             // 页面内容 - 使用 FadeTransition 实现平滑切换
@@ -115,7 +118,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       parent: _tabControllers[_currentIndex],
                       curve: Curves.easeOutCubic,
                     )),
-                    child: _screens[_currentIndex],
+                    child: Padding(
+                      // 为所有子页面预留底部导航栏空间
+                      padding: const EdgeInsets.only(bottom: _bottomNavHeight),
+                      child: _screens[_currentIndex],
+                    ),
                   ),
                 );
               },
@@ -123,13 +130,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           ],
         ),
       ),
+      // 使用 extendBody: false，自定义导航栏
+      extendBody: false,
       bottomNavigationBar: _buildBottomNav(),
     );
   }
 
   Widget _buildBottomNav() {
     return Container(
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 20),
       decoration: BoxDecoration(
         color: const Color(0xE6060C1F),
         borderRadius: BorderRadius.circular(24),
@@ -148,7 +157,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
           child: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
@@ -172,10 +181,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     
     return GestureDetector(
       onTap: () => _onTabChanged(index),
+      behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 250),
         curve: Curves.easeOutCubic,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: isSelected 
               ? AppTheme.primary.withOpacity(0.15) 
@@ -197,15 +207,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 isSelected ? activeIcon : icon,
                 key: ValueKey(isSelected),
                 color: isSelected ? AppTheme.activeNav : AppTheme.soft,
-                size: isSelected ? 24 : 22,
+                size: isSelected ? 22 : 20,
               ),
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             AnimatedDefaultTextStyle(
               duration: const Duration(milliseconds: 200),
               style: TextStyle(
                 color: isSelected ? AppTheme.activeNav : AppTheme.soft,
-                fontSize: 11,
+                fontSize: 10,
                 fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
               ),
               child: Text(label),
@@ -219,6 +229,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
 /// 动态星空背景 - 带呼吸效果
 class AnimatedStarField extends StatefulWidget {
+  const AnimatedStarField({super.key});
+
   @override
   State<AnimatedStarField> createState() => _AnimatedStarFieldState();
 }
@@ -274,7 +286,6 @@ class _BreathingStarPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 呼吸效果的光晕
     final breathOpacity = 0.3 + (breathValue * 0.2);
     
     // 主光晕 - 左上
@@ -308,7 +319,6 @@ class _BreathingStarPainter extends CustomPainter {
       final y = ((i * 251 + rng * 2) % 1000) / 1000 * size.height;
       final baseR = ((i * 73) % 3).toDouble() + 0.5;
       
-      // 闪烁效果
       final twinkle = math.sin((twinkleValue * math.pi * 2) + (i * 0.5)) * 0.5 + 0.5;
       final r = baseR * (0.7 + twinkle * 0.6);
       final opacity = 0.15 + twinkle * 0.25;

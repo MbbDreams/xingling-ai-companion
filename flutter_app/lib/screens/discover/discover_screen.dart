@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../utils/theme.dart';
 import '../../models/growth.dart';
 import '../../services/api_services.dart';
+import '../../providers/auth_provider.dart';
 
 /// 发现页面 — 匹配原型深色宇宙风格
 class DiscoverScreen extends ConsumerStatefulWidget {
@@ -66,15 +67,22 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
       final response = TaskCompleteResponse.fromJson(responseData);
 
       if (mounted) {
+        final intimacyText = response.intimacyGained != null 
+            ? '，亲密度 +${response.intimacyGained}' 
+            : '';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('任务完成！获得 ${response.coinsEarned} 星币 ✨'),
+            content: Text('任务完成！获得 ${response.coinsEarned} 星币$intimacyText ✨'),
             backgroundColor: AppTheme.primary,
           ),
         );
       }
 
+      // 刷新任务列表
       _loadTasks();
+      
+      // 刷新用户信息以更新星币显示
+      await ref.read(authProvider.notifier).refreshUser();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

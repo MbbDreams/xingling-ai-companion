@@ -1,87 +1,176 @@
-# Xingling AI Companion MVP
+# 星灵 AI 伴侣 (Xingling AI Companion)
 
-这是根据 `Xingling Ai Companion Full Mvp Plan.pdf` 与原型 UI 图搭建的 MVP 工程骨架。当前版本包含静态移动端 Web 原型与 FastAPI 后端骨架；后端已补齐数据库模型、核心接口、PostgreSQL + pgvector 建表脚本，以及 Redis/Celery 预留。
+一个基于 Flutter + FastAPI 的 AI 伴侣应用，提供智能对话、记忆系统、成长日记、个性化定制等功能。
 
-## 运行方式
+## 项目简介
 
-当前前端是零依赖静态工程，可以直接打开：
+**星灵 AI 伴侣**是一款智能 AI 陪伴应用，用户可以与虚拟伴侣"晚星"进行自然对话，记录成长日记，管理珍贵记忆，并通过完成任务获得奖励来培养与伴侣的亲密度。
+
+### 核心特性
+
+- 🤖 **智能对话** - 基于 GPT-4 的自然语言对话，情感理解和记忆引用
+- 🧠 **记忆系统** - AI 记住用户的重要信息，创造个性化陪伴体验
+- 📔 **成长日记** - 记录心情变化，AI 陪伴成长
+- 🎯 **每日任务** - 完成任务获得星币和亲密度奖励
+- 🛍️ **商店系统** - 星币、VIP、服装场景等虚拟商品
+- 👤 **个人中心** - 完整的资料管理和账户统计
+
+## 技术栈
+
+### 后端
+- **FastAPI** - 高性能 Web 框架
+- **SQLAlchemy 2.0** - 异步 ORM
+- **PostgreSQL + pgvector** - 主数据库和向量存储
+- **Redis** - 缓存和消息队列
+- **OpenAI API** - GPT-4 对话和 Embedding
+- **JWT** - 认证机制
+
+### 前端
+- **Flutter** - 跨平台框架
+- **Riverpod** - 状态管理
+- **Dio** - HTTP 客户端
+- **flutter_secure_storage** - 安全存储
+
+## 快速开始
+
+### 环境要求
+
+- Python 3.10+
+- Flutter 3.19+
+- PostgreSQL 15+
+- Redis 7+
+
+### 一键启动（推荐）
 
 ```bash
-open index.html
+# 克隆项目
+git clone <repository-url>
+cd xingling-ai-companion
+
+# 添加执行权限并启动
+chmod +x scripts/*.sh
+./scripts/start-all.sh
 ```
 
-或用本地静态服务器运行：
+### 手动启动
 
 ```bash
-python3 -m http.server 4173
-```
+# 1. 启动基础设施
+docker-compose up -d
 
-然后访问 `http://localhost:4173`。
-
-后端运行：
-
-```bash
-docker compose up -d postgres redis
+# 2. 启动后端
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python init_db.py
+python -m uvicorn app.main:app --reload --port 8000
+
+# 3. 启动前端
+cd ../flutter_app
+flutter pub get
+flutter run -d chrome
 ```
 
-后端地址：
+访问 http://localhost:8000/docs 查看 API 文档。
 
-- 健康检查：`http://localhost:8000/health`
-- API 文档：`http://localhost:8000/docs`
+## 项目文档
 
-## 目录说明
+详细文档请查看 `docs/` 目录：
 
-```text
+| 文档 | 说明 |
+|------|------|
+| [01-项目介绍.md](docs/01-项目介绍.md) | 项目概述、架构设计、技术栈 |
+| [02-部署文档.md](docs/02-部署文档.md) | 环境配置、部署指南、常见问题 |
+| [03-功能模块文档.md](docs/03-功能模块文档.md) | 各功能模块详细说明 |
+
+## 项目结构
+
+```
 xingling-ai-companion/
-  backend/                   # FastAPI 后端服务
-    app/                     # API、模型、服务层、任务队列
-    db/create_database.sql   # 手动创建数据库与用户
-    db/schema.sql            # PostgreSQL + pgvector 表结构
-    requirements.txt         # Python 依赖
-  docker-compose.yml         # PostgreSQL(pgvector) + Redis
-  index.html                 # App HTML 入口
-  src/styles.css             # 全局视觉、布局、组件样式
-  src/app.js                 # 应用启动入口
-  src/data/mockData.js       # MVP 阶段的模拟数据
-  src/modules/               # 前端页面与状态模块
-  src/backend/               # 前端接口契约参考
-  src/assets/reference/      # 原型图参考资产
-  docs/                      # 产品与开发说明
+├── backend/              # FastAPI 后端
+│   ├── app/
+│   │   ├── api/          # API 路由
+│   │   ├── core/         # 核心配置
+│   │   ├── models/       # 数据模型
+│   │   ├── schemas/      # Pydantic 模型
+│   │   └── services/     # 业务逻辑
+│   ├── init_db.py        # 数据库初始化
+│   └── requirements.txt
+├── flutter_app/          # Flutter 前端
+│   └── lib/
+│       ├── api/          # API 客户端
+│       ├── models/       # 数据模型
+│       ├── providers/    # 状态管理
+│       ├── screens/      # 页面
+│       └── services/     # 业务服务
+├── docs/                 # 项目文档
+└── docker-compose.yml    # Docker 配置
 ```
 
-## 已补齐的后端能力
+## 功能模块
 
-- `POST /api/v1/chat/send`：聊天消息、情绪识别、AI 回复、消息持久化。
-- `GET /api/v1/memory/list` / `POST /api/v1/memory`：长期记忆列表与新增。
-- `GET /api/v1/diary/list` / `POST /api/v1/diary`：日记与心情记录。
-- `GET /api/v1/growth/summary`：亲密度、消息数、记忆数、里程碑。
-- `GET /api/v1/shop/items`：商店商品列表。
-- `GET /api/v1/profile/me`：当前用户与 AI 伴侣资料。
-- `backend/db/schema.sql`：users、companions、conversations、messages、memories、diary_entries、growth_milestones、shop_items、analytics_events。
+### 已实现 ✅
 
-## 已覆盖的 MVP UI
+- [x] 用户认证（手机号+验证码、JWT）
+- [x] 智能对话（GPT-4）
+- [x] 记忆系统（向量存储）
+- [x] 成长日记（日历视图）
+- [x] 每日任务（星币奖励）
+- [x] 商店系统（商品展示）
+- [x] 个人中心（资料管理）
+- [x] 成长系统（亲密度、等级）
 
-- 聊天页：文字消息、输入框、快捷动作、底部导航。
-- 伴侣主页：亲密度、记忆摘要、语音片段、任务入口。
-- 形象页：角色形象、服装选项、语音包。
-- 记忆页：分类筛选、记忆列表、新增按钮。
-- 日记页：日期选择、心情选择、日记卡片。
-- 成长页：亲密度等级、互动统计、里程碑。
-- 语音通话页：通话中状态与操作按钮。
-- 发现页：活动任务、许愿灯、社区入口。
-- 商店页：会员、服装、场景、语音包。
-- 我的页：会员状态、设置列表、退出按钮。
+### 计划中 🟡
 
-## 下一步建议
+- [ ] 语音对话
+- [ ] AI 绘画
+- [ ] 多人社交
+- [ ] 数据导出
+- [ ] 智能提醒
+- [ ] 情绪分析
 
-1. 把现有静态 Web 原型接入 `http://localhost:8000/api/v1`。
-2. 接入真实用户系统与 Firebase/Supabase/Auth0 等鉴权。
-3. 给记忆召回补 OpenAI Embedding 写入与 pgvector 相似度检索。
-4. 接入 TTS/ASR 与主动消息推送。
-5. 将静态角色图替换为可配置 Live2D、3D 或视频形象资源。
+## API 接口
+
+### 认证接口
+```
+POST /api/v1/auth/send-code          # 发送验证码
+POST /api/v1/auth/login              # 登录
+GET  /api/v1/auth/me                 # 获取当前用户
+PUT  /api/v1/auth/me                 # 更新资料
+```
+
+### 聊天接口
+```
+POST /api/v1/chat/send               # 发送消息
+GET  /api/v1/chat/history            # 聊天记录
+GET  /api/v1/chat/suggestions        # 快捷回复
+```
+
+### 其他接口
+详见 API 文档: http://localhost:8000/docs
+
+## 截图展示
+
+| 聊天界面 | 日记页面 | 发现页面 |
+|---------|---------|---------|
+| ![Chat](docs/screenshots/chat.png) | ![Diary](docs/screenshots/diary.png) | ![Discover](docs/screenshots/discover.png) |
+
+## 开发团队
+
+- 产品 & 设计：星灵团队
+- 后端开发：FastAPI 专家组
+- 前端开发：Flutter 专家组
+
+## 许可证
+
+MIT License
+
+## 联系方式
+
+- 问题反馈：GitHub Issues
+- 商务合作：contact@xingling.ai
+
+---
+
+**星灵 AI 伴侣** - 让 AI 成为你最贴心的陪伴
