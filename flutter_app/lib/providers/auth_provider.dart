@@ -103,7 +103,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
       );
       
       if (token != null) {
-        final user = await _authService.getCurrentUser();
+        await Future.delayed(const Duration(milliseconds: 100));
+        
+        UserInfo? user;
+        try {
+          user = await _authService.getCurrentUser();
+        } catch (e) {
+          debugPrint('注册后获取用户信息失败（将重试）: $e');
+        }
+        
         state = state.copyWith(
           status: AuthStatus.authenticated,
           user: user,
@@ -139,7 +147,18 @@ class AuthNotifier extends StateNotifier<AuthState> {
       );
       
       if (token != null) {
-        final user = await _authService.getCurrentUser();
+        // token 已在 login() 内部保存到 SecureStorage
+        // 稍等一下确保安全存储写入完成
+        await Future.delayed(const Duration(milliseconds: 100));
+        
+        // 获取用户信息，失败时使用默认信息
+        UserInfo? user;
+        try {
+          user = await _authService.getCurrentUser();
+        } catch (e) {
+          debugPrint('登录后获取用户信息失败（将重试）: $e');
+        }
+        
         state = state.copyWith(
           status: AuthStatus.authenticated,
           user: user,

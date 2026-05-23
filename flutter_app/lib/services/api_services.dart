@@ -59,6 +59,16 @@ class ChatService {
       rethrow;
     }
   }
+
+  /// 创建新会话
+  Future<CreateConversationResponse> createConversation() async {
+    try {
+      final response = await _api.post('/chat/conversations');
+      return CreateConversationResponse.fromJson(response.data);
+    } catch (e) {
+      rethrow;
+    }
+  }
 }
 
 /// 成长服务 Provider

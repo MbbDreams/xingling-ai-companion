@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,12 +23,12 @@ class MessageRead(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    conversation_id: int
-    reply: str
-    emotion: str
-    memory_candidates: list[str]
-    messages: list[MessageRead]
-    intimacy_gained: int = 1  # 本次对话获得的亲密度
+    """聊天响应"""
+    reply: str                              # AI 回复
+    conversation_id: int                    # 会话 ID
+    detected_emotion: str = "neutral"       # 检测到的情绪
+    memories_used: List[str] = []           # 使用的记忆
+    intimacy_gained: int = 1                # 获得的亲密度
 
 
 class ChatHistoryResponse(BaseModel):
@@ -36,3 +37,10 @@ class ChatHistoryResponse(BaseModel):
     page: int
     page_size: int
     messages: list[MessageRead]
+
+
+class CreateConversationResponse(BaseModel):
+    """创建会话响应"""
+    conversation_id: int
+    title: str | None = None
+    created_at: datetime

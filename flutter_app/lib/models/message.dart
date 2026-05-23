@@ -19,11 +19,21 @@ class Message {
   });
 
   factory Message.fromJson(Map<String, dynamic> json) {
+    // 优先使用 is_from_user 布尔字段，其次根据 role 字段判断
+    bool isFromUser;
+    if (json.containsKey('is_from_user')) {
+      isFromUser = json['is_from_user'] == true;
+    } else if (json.containsKey('role')) {
+      isFromUser = json['role'] == 'user';
+    } else {
+      isFromUser = true;  // 默认值
+    }
+    
     return Message(
-      messageId: json['message_id'] ?? 0,
+      messageId: json['id'] ?? json['message_id'] ?? 0,
       conversationId: json['conversation_id'] ?? 0,
       content: json['content'] ?? '',
-      isFromUser: json['is_from_user'] ?? true,
+      isFromUser: isFromUser,
       createdAt: DateTime.parse(json['created_at'] ?? DateTime.now().toIso8601String()),
       emotion: json['emotion'] != null ? EmotionType.fromString(json['emotion']) : null,
       aiReply: json['ai_reply'],
@@ -95,7 +105,7 @@ class ChatRequest {
 
   Map<String, dynamic> toJson() {
     return {
-      'content': content,
+      'message': content,  // 后端字段名为 message
       if (conversationId != null) 'conversation_id': conversationId,
       if (context != null) 'context': context,
     };
@@ -165,6 +175,29 @@ class ChatSuggestion {
     return ChatSuggestion(
       text: json['text'] ?? '',
       icon: json['icon'],
+    );
+  }
+}
+
+/// 创建会话响应
+class CreateConversationResponse {
+  final int conversationId;
+  final String? title;
+  final DateTime createdAt;
+
+  CreateConversationResponse({
+    required this.conversationId,
+    this.title,
+    required this.createdAt,
+  });
+
+  factory CreateConversationResponse.fromJson(Map<String, dynamic> json) {
+    return CreateConversationResponse(
+      conversationId: json['conversation_id'] ?? json['id'] ?? 0,
+      title: json['title'],
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'])
+          : DateTime.now(),
     );
   }
 }

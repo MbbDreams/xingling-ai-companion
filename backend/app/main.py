@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
@@ -11,6 +12,14 @@ from fastapi.responses import RedirectResponse, Response
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+
+# 在任何配置读取之前，加载 .env 文件到环境变量
+_env_file = BACKEND_DIR / ".env"
+if _env_file.exists():
+    load_dotenv(_env_file)
+    print(f"[config] 已加载 .env: {_env_file}")
+else:
+    print(f"[config] 警告: 未找到 .env 文件 ({_env_file})")
 
 from app.api.router import api_router
 from app.core.config import get_settings

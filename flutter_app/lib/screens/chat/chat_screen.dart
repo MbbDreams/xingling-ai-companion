@@ -4,11 +4,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../utils/theme.dart';
 import '../../models/message.dart';
-import '../../services/api_services.dart';
+import '../../providers/chat_provider.dart';
 
 /// 聊天页面 — 参考 Replika 流畅动画风格
+/// 
+/// 使用 Riverpod 管理状态，确保切换页面后聊天记录不会丢失
 class ChatScreen extends ConsumerStatefulWidget {
-  const ChatScreen({super.key});
+  final int? conversationId;
+  
+  const ChatScreen({
+    super.key,
+    this.conversationId,
+  });
 
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
@@ -17,132 +24,31 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> with TickerProviderStateMixin {
   final TextEditingController _ctrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
-  final List<Message> _messages = [];
   final List<AnimationController> _messageAnimations = [];
-  bool _sending = false;
-  bool _showTyping = false;
-  bool _isLoading = true;
-  String? _error;
-  List<String> _suggestions = [];
 
   @override
   void initState() {
     super.initState();
-    _loadChatHistory();
-    _loadSuggestions();
-  }
-
-  Future<void> _loadChatHistory() async {
-    try {
-      setState(() {
-        _isLoading = true;
-        _error = null;
-      });
-
-      final chatService = ref.read(chatServiceProvider);
-      final response = await chatService.getChatHistory(
-        conversationId: 1,
-        page: 1,
-        pageSize: 50,
-      );
-
-      setState(() {
-        _messages.clear();
-        for (var msg in response.messages) {
-          _messages.add(msg);
-        }
-        _isLoading = false;
-      });
-
-      // 批量动画（同时启动，间隔短）
-      for (int i = 0; i < _messages.length; i++) {
-        final controller = AnimationController(
-          duration: const Duration(milliseconds: 300),
-          vsync: this,
-        );
-        _messageAnimations.add(controller);
-        Future.delayed(
-          Duration(milliseconds: i * 30), // 30ms间隔，50条只需1.5秒
-          () {
-            if (mounted) controller.forward();
-          },
-        );
-      }
-
-      _scrollToBottom();
-    } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _error = '加载聊天记录失败: $e';
-      });
-      _loadDefaultMessages();
-    }
-  }
-
-  Future<void> _loadSuggestions() async {
-    try {
-      final chatService = ref.read(chatServiceProvider);
-      final suggestions = await chatService.getSuggestions();
-      setState(() {
-        _suggestions = suggestions.map((s) => s.text).toList();
-      });
-    } catch (e) {
-      setState(() {
-        _suggestions = [
-          '今天心情怎么样',
-          '陪我聊聊天',
-          '我想听故事',
-          '帮我放松一下',
-        ];
-      });
-    }
-  }
-
-  void _loadDefaultMessages() {
-    final initialMessages = [
-      Message(
-        messageId: 1,
-        conversationId: 0,
-        content: '晚上好呀，今天过得怎么样？有什么想和我分享的吗？',
-        isFromUser: false,
-        createdAt: DateTime.now().subtract(const Duration(minutes: 5)),
-        emotion: EmotionType.happy,
-      ),
-      Message(
-        messageId: 2,
-        conversationId: 0,
-        content: '今天加班到很晚，有点累...',
-        isFromUser: true,
-        createdAt: DateTime.now().subtract(const Duration(minutes: 4)),
-      ),
-      Message(
-        messageId: 3,
-        conversationId: 0,
-        content: '辛苦你了呢 💫 要不要我陪你聊会儿？或者听你吐槽一下？',
-        isFromUser: false,
-        createdAt: DateTime.now().subtract(const Duration(minutes: 3)),
-        emotion: EmotionType.calm,
-      ),
-    ];
-
-    for (var msg in initialMessages) {
-      _addMessageWithAnimation(msg, animate: false);
-    }
-  }
-
-  void _addMessageWithAnimation(Message msg, {bool animate = true}) {
-    setState(() {
-      _messages.add(msg);
-      if (animate) {
-        final controller = AnimationController(
-          duration: const Duration(milliseconds: 350),
-          vsync: this,
-        );
-        _messageAnimations.add(controller);
-        controller.forward();
-      }
+    // 初始化会话：如果有传入 conversationId 则加载，否则使用已保存的或创建新会话
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initializeSession();
     });
-    _scrollToBottom();
+  }
+
+  Future<void> _initializeSession() async {
+    final notifier = ref.read(chatSessionProvider.notifier);
+    await notifier.initializeSession(conversationId: widget.conversationId);
+    await notifier.loadSuggestions();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _scrollCtrl.dispose();
+    for (var c in _messageAnimations) {
+      c.dispose();
+    }
+    super.dispose();
   }
 
   void _scrollToBottom() {
@@ -159,73 +65,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with TickerProviderStat
 
   Future<void> _sendMessage() async {
     final text = _ctrl.text.trim();
-    if (text.isEmpty || _sending) return;
+    if (text.isEmpty) return;
 
-    final userMsg = Message(
-      messageId: DateTime.now().millisecondsSinceEpoch,
-      conversationId: 0,
-      content: text,
-      isFromUser: true,
-      createdAt: DateTime.now(),
-    );
-
-    setState(() {
-      _sending = true;
-      _ctrl.clear();
-    });
-
-    _addMessageWithAnimation(userMsg);
-
-    // 显示正在输入
-    await Future.delayed(const Duration(milliseconds: 600));
-    setState(() {
-      _showTyping = true;
-    });
+    _ctrl.clear();
+    
+    final notifier = ref.read(chatSessionProvider.notifier);
+    await notifier.sendMessage(text);
+    
     _scrollToBottom();
-
-    try {
-      // 模拟AI回复
-      await Future.delayed(const Duration(seconds: 1));
-
-      setState(() {
-        _showTyping = false;
-      });
-
-      final aiMsg = Message(
-        messageId: DateTime.now().millisecondsSinceEpoch + 1,
-        conversationId: 0,
-        content: '收到啦~ 💫 有什么想继续聊的吗？',
-        isFromUser: false,
-        createdAt: DateTime.now(),
-        emotion: EmotionType.happy,
-      );
-
-      _addMessageWithAnimation(aiMsg);
-    } catch (e) {
-      setState(() => _showTyping = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('发送失败: $e'),
-          backgroundColor: AppTheme.danger,
-        ),
-      );
-    } finally {
-      setState(() => _sending = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    _scrollCtrl.dispose();
-    for (var c in _messageAnimations) {
-      c.dispose();
-    }
-    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final chatState = ref.watch(chatSessionProvider);
+    
+    // 当消息列表变化时滚动到底部
+    ref.listen(chatSessionProvider, (previous, next) {
+      if (previous?.messages.length != next.messages.length) {
+        _scrollToBottom();
+      }
+    });
+
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
@@ -241,12 +101,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with TickerProviderStat
       ),
       body: Column(
         children: [
-          if (_isLoading)
+          // 加载指示器
+          if (chatState.isLoading)
             const LinearProgressIndicator(
               backgroundColor: Colors.transparent,
               valueColor: AlwaysStoppedAnimation<Color>(AppTheme.primary),
             ),
-          if (_error != null)
+          // 错误提示
+          if (chatState.error != null)
             Container(
               padding: const EdgeInsets.all(12),
               color: AppTheme.danger.withOpacity(0.1),
@@ -256,56 +118,236 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with TickerProviderStat
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      _error!,
+                      chatState.error!,
                       style: TextStyle(color: AppTheme.danger, fontSize: 12),
                     ),
                   ),
                   TextButton(
-                    onPressed: _loadChatHistory,
+                    onPressed: () {
+                      ref.read(chatSessionProvider.notifier).clearError();
+                      _initializeSession();
+                    },
                     child: const Text('重试', style: TextStyle(fontSize: 12)),
                   ),
                 ],
               ),
             ),
+          // 消息列表
           Expanded(
-            child: ListView.builder(
-              controller: _scrollCtrl,
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 16),
-              itemCount: _messages.length + (_showTyping ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (index == _messages.length && _showTyping) {
-                  return _TypingIndicator();
-                }
-                final msg = _messages[index];
-                final animIndex = index - (_messages.length - _messageAnimations.length);
-                final animation = animIndex >= 0 && animIndex < _messageAnimations.length
-                    ? _messageAnimations[animIndex]
-                    : null;
-                return _AnimatedMessageBubble(
-                  message: msg,
-                  animation: animation,
-                );
-              },
-            ),
+            child: _buildMessageList(chatState),
           ),
           // 快捷操作
-          if (_messages.length <= 4 && _suggestions.isNotEmpty)
+          if (chatState.messages.length <= 4 && chatState.suggestions.isNotEmpty)
             _QuickActions(
-              actions: _suggestions,
+              actions: chatState.suggestions,
               onTap: (text) {
                 _ctrl.text = text;
                 _sendMessage();
               },
             ),
+          // 输入框
           _ChatInput(
             controller: _ctrl,
             onSend: _sendMessage,
-            isLoading: _sending,
+            isLoading: chatState.isSending,
           ),
         ],
       ),
     );
   }
+
+  Widget _buildMessageList(ChatSessionState chatState) {
+    final messages = chatState.messages;
+    
+    if (messages.isEmpty && !chatState.isLoading) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.chat_bubble_outline,
+              size: 64,
+              color: AppTheme.muted.withOpacity(0.5),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '开始和晚星聊天吧',
+              style: TextStyle(
+                color: AppTheme.muted.withOpacity(0.7),
+                fontSize: 16,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      controller: _scrollCtrl,
+      padding: const EdgeInsets.fromLTRB(18, 8, 18, 16),
+      itemCount: messages.length + (chatState.showTyping ? 1 : 0),
+      itemBuilder: (context, index) {
+        // 正在输入指示器
+        if (index == messages.length && chatState.showTyping) {
+          return _TypingIndicator();
+        }
+        
+        final msg = messages[index];
+        return _MessageBubble(
+          message: msg,
+          animationDelay: index * 30,
+        );
+      },
+    );
+  }
+}
+
+/// 消息气泡（带动画）
+class _MessageBubble extends StatefulWidget {
+  final Message message;
+  final int animationDelay;
+
+  const _MessageBubble({
+    required this.message,
+    this.animationDelay = 0,
+  });
+
+  @override
+  State<_MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<_MessageBubble>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 350),
+      vsync: this,
+    );
+    
+    // 延迟启动动画
+    Future.delayed(Duration(milliseconds: widget.animationDelay), () {
+      if (mounted) {
+        _controller.forward();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isUser = widget.message.isFromUser;
+
+    Widget bubble;
+    if (isUser) {
+      // 用户消息 - 右对齐
+      bubble = Align(
+        alignment: Alignment.centerRight,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.72,
+          ),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: AppTheme.userBubbleDecoration,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  widget.message.content,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  _fmt(widget.message.createdAt),
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.72),
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    } else {
+      // AI消息 - 左对齐
+      bubble = Align(
+        alignment: Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.72,
+          ),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: AppTheme.aiBubbleDecoration,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.message.content,
+                  style: const TextStyle(
+                    color: AppTheme.aiBubbleText,
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    _fmt(widget.message.createdAt),
+                    style: const TextStyle(
+                      color: Color(0xFF777B8E),
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 进入动画
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Opacity(
+          opacity: CurvedAnimation(
+            parent: _controller,
+            curve: Curves.easeOut,
+          ).value,
+          child: Transform.translate(
+            offset: Offset(
+              isUser ? 20 * (1 - _controller.value) : -20 * (1 - _controller.value),
+              8 * (1 - _controller.value),
+            ),
+            child: child,
+          ),
+        );
+      },
+      child: bubble,
+    );
+  }
+
+  String _fmt(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 }
 
 /// 带动画的图标按钮
@@ -437,128 +479,6 @@ class _TypingIndicatorState extends State<_TypingIndicator>
       ),
     );
   }
-}
-
-/// 带动画的消息气泡（AI消息带头像）
-class _AnimatedMessageBubble extends StatelessWidget {
-  final Message message;
-  final AnimationController? animation;
-
-  const _AnimatedMessageBubble({
-    required this.message,
-    this.animation,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isUser = message.isFromUser;
-
-    Widget bubble;
-    if (isUser) {
-      // 用户消息 - 右对齐
-      bubble = Align(
-        alignment: Alignment.centerRight,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.72,
-          ),
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: AppTheme.userBubbleDecoration,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  message.content,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    height: 1.5,
-                  ),
-                ),
-                const SizedBox(height: 5),
-                Text(
-                  _fmt(message.createdAt),
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.72),
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    } else {
-      // AI消息 - 左对齐
-      bubble = Align(
-        alignment: Alignment.centerLeft,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.72,
-          ),
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: AppTheme.aiBubbleDecoration,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  message.content,
-                  style: const TextStyle(
-                    color: AppTheme.aiBubbleText,
-                    fontSize: 14,
-                    height: 1.5,
-                  ),
-                ),
-                const SizedBox(height: 5),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Text(
-                    _fmt(message.createdAt),
-                    style: const TextStyle(
-                      color: Color(0xFF777B8E),
-                      fontSize: 11,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    // 进入动画
-    if (animation != null) {
-      bubble = AnimatedBuilder(
-        animation: animation!,
-        builder: (context, child) {
-          return Opacity(
-            opacity: CurvedAnimation(
-              parent: animation!,
-              curve: Curves.easeOut,
-            ).value,
-            child: Transform.translate(
-              offset: Offset(
-                isUser ? 20 * (1 - animation!.value) : -20 * (1 - animation!.value),
-                8 * (1 - animation!.value),
-              ),
-              child: child,
-            ),
-          );
-        },
-        child: bubble,
-      );
-    }
-
-    return bubble;
-  }
-
-  String _fmt(DateTime t) =>
-      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 }
 
 /// 快捷操作

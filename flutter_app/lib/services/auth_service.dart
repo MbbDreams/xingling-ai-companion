@@ -25,10 +25,19 @@ class AuthService {
         data: {'phone': phone, 'purpose': 'login'},
       );
       
-      if (response.data['success'] == true) {
+      final data = response.data;
+      // 后端返回 {"success": true, "message": "...", "debug_code": "..."}
+      if (data is Map && data['success'] == true) {
         // 开发环境打印验证码
-        if (kDebugMode && response.data['debug_code'] != null) {
-          print('[DEBUG] 验证码: ${response.data['debug_code']}');
+        if (kDebugMode && data['debug_code'] != null) {
+          print('[DEBUG] 验证码: ${data['debug_code']}');
+        }
+        return true;
+      }
+      // 兼容：即使没有 success 字段，只要没抛异常就算成功
+      if (data is Map && data['message'] != null) {
+        if (kDebugMode && data['debug_code'] != null) {
+          print('[DEBUG] 验证码: ${data['debug_code']}');
         }
         return true;
       }

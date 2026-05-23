@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db_session
-from app.models import Message
-from app.schemas.chat import ChatHistoryResponse, ChatRequest, ChatResponse
+from app.api.deps import get_db_session, get_current_user_id
+from app.core.config import settings
+from app.models import Message, Conversation, Companion
+from app.schemas.chat import ChatHistoryResponse, ChatRequest, ChatResponse, CreateConversationResponse
 from app.services.chat_service import ChatService
+from app.services.chat_service_streaming import StreamingChatService
 
 router = APIRouter()
 
@@ -14,8 +17,51 @@ router = APIRouter()
 async def send_chat_message(
     payload: ChatRequest,
     session: AsyncSession = Depends(get_db_session),
+    user_id: int = Depends(get_current_user_id),
 ) -> ChatResponse:
-    return await ChatService(session).send_message(payload)
+    """标准聊天接口（非流式）"""
+    # 如果没有 user_id，使用默认用户 ID 1
+    uid = user_id or 1
+    
+    service = ChatService(
+        session,
+        openai_api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        base_url=settings.openai_base_url or None
+    )
+    return await service.send_message(uid, payload)
+
+
+@router.post("/send/stream")
+async def send_chat_message_stream(
+    payload: ChatRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: int = Depends(get_current_user_id),
+) -> StreamingResponse:
+    """
+    流式聊天接口
+    
+    使用 SSE (Server-Sent Events) 实现流式输出
+    首字响应时间 < 100ms
+    """
+    uid = user_id or 1
+    
+    service = StreamingChatService(
+        session,
+        openai_api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        base_url=settings.openai_base_url or None
+    )
+    
+    return StreamingResponse(
+        service.stream_chat(uid, payload),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲
+        }
+    )
 
 
 @router.get("/history", response_model=ChatHistoryResponse)
@@ -55,6 +101,7 @@ async def get_chat_history(
                 "id": msg.id,
                 "conversation_id": msg.conversation_id,
                 "role": msg.role,
+                "is_from_user": msg.role == "user",  # 添加布尔字段供前端使用
                 "content": msg.content,
                 "emotion": msg.emotion,
                 "created_at": msg.created_at,
@@ -76,3 +123,43 @@ async def get_chat_suggestions() -> dict:
             {"text": "分享今天的趣事", "icon": "✨"},
         ]
     }
+
+
+@router.post("/conversations", response_model=CreateConversationResponse)
+async def create_conversation(
+    session: AsyncSession = Depends(get_db_session),
+    user_id: int = Depends(get_current_user_id),
+) -> CreateConversationResponse:
+    """创建新的聊天会话"""
+    uid = user_id or 1
+    
+    # 获取或创建用户的伴侣
+    result = await session.execute(
+        select(Companion).where(Companion.user_id == uid)
+    )
+    companion = result.scalar_one_or_none()
+    
+    if not companion:
+        # 创建默认伴侣
+        companion = Companion(
+            user_id=uid,
+            name="晚星",
+            personality="温柔体贴的AI伴侣",
+        )
+        session.add(companion)
+        await session.flush()
+    
+    # 创建新会话
+    conversation = Conversation(
+        user_id=uid,
+        companion_id=companion.id,
+        title="新的聊天",
+    )
+    session.add(conversation)
+    await session.commit()
+    
+    return CreateConversationResponse(
+        conversation_id=conversation.id,
+        title=conversation.title,
+        created_at=conversation.created_at,
+    )

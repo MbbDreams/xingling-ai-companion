@@ -71,11 +71,13 @@ final dioProvider = Provider<Dio>((ref) {
 /// 认证拦截器 - 自动添加 JWT Token
 class AuthInterceptor extends Interceptor {
   @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
-    // 如果不是认证相关接口，则添加 Token
+  void onRequest(
+    RequestOptions options,
+    RequestInterceptorHandler handler,
+  ) async {
     if (!_isAuthEndpoint(options.path)) {
       final token = await SecureStorage.getAccessToken();
-      if (token != null) {
+      if (token != null && token.isNotEmpty) {
         options.headers['Authorization'] = 'Bearer $token';
       }
     }
