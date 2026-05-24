@@ -15,16 +15,16 @@ class ChatService:
     def __init__(
         self,
         session: AsyncSession,
-        openai_api_key: str = None,
+        api_key: str = None,
         model: str = None,
         base_url: str = None,
     ):
         self.session = session
         self.agent = CompanionAgent(
             db=session,
-            api_key=openai_api_key or settings.openai_api_key,
-            model=model or settings.openai_model,
-            base_url=base_url or settings.openai_base_url,
+            api_key=api_key or settings.llm_api_key,
+            model=model or settings.llm_model,
+            base_url=base_url or settings.llm_base_url,
         )
     
     async def send_message(

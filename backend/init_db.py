@@ -1,9 +1,14 @@
 """
 数据库初始化脚本 - 创建所有表结构
-运行: python init_db.py
+运行: 
+    python init_db.py          # 交互模式
+    python init_db.py --force  # 强制重建（非交互）
+    python init_db.py check    # 检查表结构
+    python init_db.py seed     # 只插入初始数据
 """
 
 import asyncio
+import sys
 from sqlalchemy import text
 from app.core.database import engine, Base
 from app.models.entities import (
@@ -13,8 +18,12 @@ from app.models.entities import (
 )
 
 
-async def init_database():
-    """初始化数据库 - 创建所有表"""
+async def init_database(force: bool = False):
+    """初始化数据库 - 创建所有表
+    
+    Args:
+        force: 是否强制重建（不询问）
+    """
     
     print("=" * 50)
     print("  星灵 AI 伴侣 - 数据库初始化")
@@ -33,10 +42,14 @@ async def init_database():
         if existing_tables:
             print(f"⚠️  发现已有表: {', '.join(sorted(existing_tables))}")
             print()
-            response = input("是否删除现有表并重新创建? (yes/no): ")
-            if response.lower() != 'yes':
-                print("\n❌ 操作已取消")
-                return
+            
+            if force:
+                print("🔄 强制重建模式...")
+            else:
+                response = input("是否删除现有表并重新创建? (yes/no): ")
+                if response.lower() != 'yes':
+                    print("\n❌ 操作已取消")
+                    return
             
             print("\n🗑️  删除现有表...")
             await conn.run_sync(Base.metadata.drop_all)
@@ -44,6 +57,17 @@ async def init_database():
         
         print("\n📦 创建新表...")
         await conn.run_sync(Base.metadata.create_all)
+        
+        # 创建向量索引（pgvector）
+        print("\n🔍 创建向量索引...")
+        try:
+            await conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_memories_embedding 
+                ON memories USING ivfflat (embedding vector_cosine_ops)
+            """))
+            print("✅ 向量索引创建成功")
+        except Exception as e:
+            print(f"⚠️  向量索引创建失败（可能需要安装 pgvector）: {e}")
         
         # 验证创建结果
         result = await conn.execute(text("""
@@ -136,19 +160,23 @@ async def seed_data():
 
 
 if __name__ == "__main__":
-    import sys
-    
     if len(sys.argv) > 1:
         command = sys.argv[1]
         if command == "check":
             asyncio.run(check_tables())
         elif command == "seed":
             asyncio.run(seed_data())
+        elif command == "--force":
+            # 强制重建（非交互）
+            asyncio.run(init_database(force=True))
+            asyncio.run(seed_data())
         else:
-            print("用法: python init_db.py [check|seed]")
-            print("  check - 检查现有表结构")
-            print("  seed  - 插入初始数据")
+            print("用法: python init_db.py [选项]")
+            print("  无参数    - 交互模式初始化")
+            print("  --force   - 强制重建（非交互）")
+            print("  check     - 检查现有表结构")
+            print("  seed      - 只插入初始数据")
     else:
-        # 默认执行完整初始化
+        # 默认执行完整初始化（交互模式）
         asyncio.run(init_database())
         asyncio.run(seed_data())

@@ -9,6 +9,7 @@ AI 伴侣 Agent - 核心对话引擎（重构版）
 参考：MemGPT/Letta、LangGraph、星野
 """
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, AsyncGenerator
 
@@ -18,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy import select
 
 from .memory import (
-    Embedder,
+    get_embedder,
     CoreMemoryManager,
     WorkingMemoryManager,
     LongTermMemoryManager,
@@ -29,6 +30,8 @@ from .context_builder import ContextBuilder
 from .models import RelationshipType
 from ..models import Companion, User
 from ..core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class CompanionAgent:
@@ -51,10 +54,10 @@ class CompanionAgent:
     ):
         self.db = db
         
-        # LLM 配置
-        self.api_key = api_key or settings.openai_api_key
-        self.model = model or settings.openai_model or "deepseek-chat"
-        self.base_url = base_url or settings.openai_base_url or "https://api.deepseek.com"
+        # LLM 配置（使用 DeepSeek）
+        self.api_key = api_key or settings.llm_api_key
+        self.model = model or settings.llm_model or "deepseek-chat"
+        self.base_url = base_url or settings.llm_base_url or "https://api.deepseek.com/v1"
         
         # 初始化 LLM
         self.llm = ChatOpenAI(
@@ -65,7 +68,7 @@ class CompanionAgent:
         )
         
         # 初始化分层记忆系统
-        self.embedder = Embedder()
+        self.embedder = get_embedder()
         self.core_memory_mgr = CoreMemoryManager(db, self.llm)
         self.working_memory_mgr = WorkingMemoryManager(db, self.llm)
         self.long_term_memory_mgr = LongTermMemoryManager(db, self.embedder)
@@ -272,6 +275,42 @@ class CompanionAgent:
         self.db.add(message)
         await self.db.commit()
     
+    async def _run_memory_task_with_retry(
+        self,
+        coro_fn,
+        task_name: str,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+    ) -> Any:
+        """
+        带重试和指数退避的后台任务执行器
+        
+        Args:
+            coro_fn: 返回协程的可调用对象
+            task_name: 任务名称（用于日志）
+            max_retries: 最大重试次数
+            base_delay: 基础延迟秒数（指数退避）
+            
+        Returns:
+            任务执行结果，全部失败返回 None
+        """
+        for attempt in range(1, max_retries + 1):
+            try:
+                return await coro_fn()
+            except Exception as e:
+                delay = base_delay * (2 ** (attempt - 1))
+                if attempt < max_retries:
+                    logger.warning(
+                        f"[CompanionAgent] 记忆任务 '{task_name}' 第 {attempt}/{max_retries} 次失败: {e}，"
+                        f"{delay:.1f}s 后重试"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        f"[CompanionAgent] 记忆任务 '{task_name}' 全部 {max_retries} 次重试后仍失败: {e}"
+                    )
+        return None
+
     async def _async_memory_tasks(
         self,
         user_id: int,
@@ -283,7 +322,8 @@ class CompanionAgent:
         """
         异步记忆任务（不阻塞用户响应）
         
-        使用独立的数据库会话，避免与主会话冲突
+        使用独立的数据库会话，避免与主会话冲突。
+        每个子任务独立执行，单个任务失败不影响其他任务。
         """
         # 创建独立的数据库会话
         from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -293,46 +333,61 @@ class CompanionAgent:
         try:
             async with async_session() as session:
                 # 创建独立的记忆管理器
-                embedder = Embedder()
+                embedder = get_embedder()
                 long_term_memory = LongTermMemoryManager(session, embedder)
                 core_memory = CoreMemoryManager(session, self.llm)
                 working_memory = WorkingMemoryManager(session, self.llm)
                 memory_extractor = MemoryExtractor(self.llm, long_term_memory)
                 
                 # 1. 记忆提取
-                await memory_extractor.extract_from_conversation(
-                    user_message=user_message,
-                    ai_response=ai_response,
-                    user_id=user_id,
-                    companion_id=companion_id,
+                await self._run_memory_task_with_retry(
+                    lambda: memory_extractor.extract_from_conversation(
+                        user_message=user_message,
+                        ai_response=ai_response,
+                        user_id=user_id,
+                        companion_id=companion_id,
+                    ),
+                    task_name="记忆提取",
                 )
                 
                 # 2. 检查是否需要更新核心记忆
-                user_memories = await long_term_memory.get_user_summary(user_id)
-                if user_memories:
-                    await core_memory.update_human_block(
-                        user_id=user_id,
-                        companion_id=companion_id,
-                        memories_text=user_memories,
-                    )
+                async def _update_human_block():
+                    user_memories = await long_term_memory.get_user_summary(user_id)
+                    if user_memories:
+                        await core_memory.update_human_block(
+                            user_id=user_id,
+                            companion_id=companion_id,
+                            memories_text=user_memories,
+                        )
+
+                await self._run_memory_task_with_retry(
+                    _update_human_block,
+                    task_name="更新用户画像",
+                )
                 
                 # 3. 检查是否需要生成对话摘要
-                await working_memory.maybe_summarize(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
+                await self._run_memory_task_with_retry(
+                    lambda: working_memory.maybe_summarize(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                    ),
+                    task_name="对话摘要",
                 )
                 
                 # 4. 更新关系状态
-                await core_memory.update_relationship_block(
-                    user_id=user_id,
-                    companion_id=companion_id,
+                await self._run_memory_task_with_retry(
+                    lambda: core_memory.update_relationship_block(
+                        user_id=user_id,
+                        companion_id=companion_id,
+                    ),
+                    task_name="更新关系状态",
                 )
                 
                 # 提交事务
                 await session.commit()
                 
         except Exception as e:
-            print(f"[CompanionAgent] 异步记忆任务失败: {e}")
+            logger.error(f"[CompanionAgent] 异步记忆任务整体失败: {e}")
         finally:
             await engine.dispose()
     

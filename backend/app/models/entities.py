@@ -107,8 +107,11 @@ class Memory(TimestampMixin, Base):
     category: Mapped[str] = mapped_column(String(50), default="general")
     importance: Mapped[float] = mapped_column(Float, default=0.5)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
+    memory_type: Mapped[str] = mapped_column(String(50), default="fact")  # fact/preference/emotion/basic_info
+    source: Mapped[str] = mapped_column(String(50), default="user_told")  # user_told/ai_inferred
     recall_count: Mapped[int] = mapped_column(Integer, default=0)  # 被回忆次数
     last_recalled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # 过期时间（可选）
 
 
 class DiaryEntry(TimestampMixin, Base):

@@ -25,9 +25,9 @@ async def send_chat_message(
     
     service = ChatService(
         session,
-        openai_api_key=settings.openai_api_key,
-        model=settings.openai_model,
-        base_url=settings.openai_base_url or None
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url or None
     )
     return await service.send_message(uid, payload)
 
@@ -48,9 +48,9 @@ async def send_chat_message_stream(
     
     service = StreamingChatService(
         session,
-        openai_api_key=settings.openai_api_key,
-        model=settings.openai_model,
-        base_url=settings.openai_base_url or None
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url or None
     )
     
     return StreamingResponse(

@@ -111,16 +111,16 @@ class MemoryMaintenance:
     async def _cleanup_expired(self) -> int:
         """清理过期记忆"""
         try:
-            # 删除过期记忆
+            # 删除过期记忆 - 使用 f-string 避免 INTERVAL 内的参数绑定问题
             result = await self.session.execute(
-                text("""
+                text(f"""
                     DELETE FROM memories
                     WHERE (expires_at IS NOT NULL AND expires_at < NOW())
                        OR (recall_count = 0 
-                           AND created_at < NOW() - INTERVAL ':days days'
+                           AND created_at < NOW() - INTERVAL '{self.CLEANUP_DAYS} days'
                            AND importance < :min_importance)
                 """),
-                {"days": self.CLEANUP_DAYS, "min_importance": self.MIN_IMPORTANCE}
+                {"min_importance": self.MIN_IMPORTANCE}
             )
             
             deleted = result.rowcount
@@ -137,15 +137,16 @@ class MemoryMaintenance:
         try:
             # 对超过 DECAY_DAYS 的记忆进行衰减
             # 排除 basic_info 等不会过时的类型
+            # 使用 f-string 避免 INTERVAL 内的参数绑定问题
             result = await self.session.execute(
                 text(f"""
                     UPDATE memories
                     SET importance = importance * :factor
-                    WHERE created_at < NOW() - INTERVAL ':days days'
+                    WHERE created_at < NOW() - INTERVAL '{self.DECAY_DAYS} days'
                       AND importance > 0.1
                       AND memory_type NOT IN ({','.join([f"'{t}'" for t in self.NO_DECAY_TYPES])})
                 """),
-                {"factor": self.DECAY_FACTOR, "days": self.DECAY_DAYS}
+                {"factor": self.DECAY_FACTOR}
             )
             
             decayed = result.rowcount

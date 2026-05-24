@@ -8,7 +8,9 @@
 - relationship_block: 关系状态摘要（动态，定期更新）
 """
 
-from datetime import datetime
+import json
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +18,8 @@ from pydantic import BaseModel
 
 from app.models import Companion
 from app.agent.prompts import PromptBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class CoreMemory(BaseModel):
@@ -35,6 +39,10 @@ class CoreMemoryManager:
     MAX_HUMAN_BLOCK_TOKENS = 150
     MAX_RELATIONSHIP_BLOCK_TOKENS = 100
     
+    # Redis 缓存配置
+    CACHE_TTL = 1800  # 30 分钟
+    CACHE_PREFIX = "core_memory"
+
     def __init__(self, session: AsyncSession, llm=None):
         """
         初始化核心记忆管理器
@@ -46,6 +54,77 @@ class CoreMemoryManager:
         self.session = session
         self.llm = llm
         self._cache: dict[int, CoreMemory] = {}  # 内存缓存
+        self._redis = None
+
+    async def _get_redis(self):
+        """获取 Redis 连接（惰性初始化，失败返回 None）"""
+        if self._redis is not None:
+            return self._redis
+        try:
+            import redis.asyncio as aioredis
+            from app.core.config import settings
+            self._redis = aioredis.from_url(
+                settings.redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+            )
+            return self._redis
+        except Exception as e:
+            logger.warning(f"[CoreMemory] Redis 连接失败，将降级到直接查数据库: {e}")
+            self._redis = False  # 标记为不可用，避免反复重试
+            return None
+
+    @staticmethod
+    def _get_cache_key(user_id: int, companion_id: int, block: str = "full") -> str:
+        """
+        生成 Redis 缓存 key
+        
+        Args:
+            user_id: 用户 ID
+            companion_id: 伴侣 ID
+            block: 缓存块标识 (full / persona / human / relationship)
+            
+        Returns:
+            缓存 key 字符串
+        """
+        return f"core_memory:{user_id}:{companion_id}:{block}"
+
+    async def _cache_get(self, user_id: int, companion_id: int, block: str = "full") -> Optional[str]:
+        """从 Redis 获取缓存值，失败返回 None"""
+        try:
+            redis = await self._get_redis()
+            if redis is None:
+                return None
+            key = self._get_cache_key(user_id, companion_id, block)
+            return await redis.get(key)
+        except Exception as e:
+            logger.warning(f"[CoreMemory] Redis 读取缓存失败: {e}")
+            return None
+
+    async def _cache_set(self, user_id: int, companion_id: int, value: str, block: str = "full") -> None:
+        """写入 Redis 缓存，失败静默"""
+        try:
+            redis = await self._get_redis()
+            if redis is None:
+                return
+            key = self._get_cache_key(user_id, companion_id, block)
+            await redis.set(key, value, ex=self.CACHE_TTL)
+        except Exception as e:
+            logger.warning(f"[CoreMemory] Redis 写入缓存失败: {e}")
+
+    async def _cache_delete(self, user_id: int, companion_id: int) -> None:
+        """删除与该用户-伴侣对相关的所有缓存"""
+        try:
+            redis = await self._get_redis()
+            if redis is None:
+                return
+            keys_to_delete = [
+                self._get_cache_key(user_id, companion_id, b)
+                for b in ("full", "persona", "human", "relationship")
+            ]
+            await redis.delete(*keys_to_delete)
+        except Exception as e:
+            logger.warning(f"[CoreMemory] Redis 删除缓存失败: {e}")
     
     async def initialize(self, user_id: int, companion_id: int) -> CoreMemory:
         """
@@ -137,6 +216,15 @@ class CoreMemoryManager:
         
         await self._save_to_db(core_memory)
         
+        # 更新 Redis 缓存
+        await self._cache_delete(user_id, companion_id)
+        try:
+            cache_data = core_memory.model_dump(mode="json")
+            await self._cache_set(user_id, companion_id, json.dumps(cache_data, default=str), "full")
+            await self._cache_set(user_id, companion_id, core_memory.human_block, "human")
+        except Exception as e:
+            logger.warning(f"[CoreMemory] 更新缓存失败: {e}")
+        
         return summary
     
     async def update_relationship_block(
@@ -164,7 +252,6 @@ class CoreMemoryManager:
             return ""
         
         # 计算相识天数（处理时区）
-        from datetime import timezone
         now = datetime.now(timezone.utc)
         created_at = companion.created_at
         if created_at.tzinfo is None:
@@ -186,8 +273,79 @@ class CoreMemoryManager:
         
         await self._save_to_db(core_memory)
         
+        # 更新 Redis 缓存
+        await self._cache_delete(user_id, companion_id)
+        try:
+            cache_data = core_memory.model_dump(mode="json")
+            await self._cache_set(user_id, companion_id, json.dumps(cache_data, default=str), "full")
+            await self._cache_set(user_id, companion_id, core_memory.relationship_block, "relationship")
+        except Exception as e:
+            logger.warning(f"[CoreMemory] 更新缓存失败: {e}")
+        
         return relationship_text
     
+    async def get_full_context(self, user_id: int, companion_id: int) -> CoreMemory:
+        """
+        获取完整核心记忆（带 Redis 缓存）
+        
+        Args:
+            user_id: 用户 ID
+            companion_id: 伴侣 ID
+            
+        Returns:
+            核心记忆对象
+        """
+        # 先查 Redis 缓存
+        cached = await self._cache_get(user_id, companion_id, "full")
+        if cached:
+            try:
+                data = json.loads(cached)
+                return CoreMemory(**data)
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"[CoreMemory] 反序列化缓存失败: {e}")
+
+        # 查数据库
+        core_memory = await self.get_core_memory(user_id, companion_id)
+
+        # 写入 Redis 缓存
+        try:
+            cache_data = core_memory.model_dump(mode="json")
+            await self._cache_set(user_id, companion_id, json.dumps(cache_data, default=str), "full")
+        except Exception as e:
+            logger.warning(f"[CoreMemory] 序列化缓存失败: {e}")
+
+        return core_memory
+
+    async def get_persona_block(self, user_id: int, companion_id: int) -> str:
+        """获取角色设定（带 Redis 缓存）"""
+        cached = await self._cache_get(user_id, companion_id, "persona")
+        if cached is not None:
+            return cached
+
+        core_memory = await self.get_core_memory(user_id, companion_id)
+        await self._cache_set(user_id, companion_id, core_memory.persona_block, "persona")
+        return core_memory.persona_block
+
+    async def get_human_block(self, user_id: int, companion_id: int) -> str:
+        """获取用户画像摘要（带 Redis 缓存）"""
+        cached = await self._cache_get(user_id, companion_id, "human")
+        if cached is not None:
+            return cached
+
+        core_memory = await self.get_core_memory(user_id, companion_id)
+        await self._cache_set(user_id, companion_id, core_memory.human_block, "human")
+        return core_memory.human_block
+
+    async def get_relationship_block(self, user_id: int, companion_id: int) -> str:
+        """获取关系状态摘要（带 Redis 缓存）"""
+        cached = await self._cache_get(user_id, companion_id, "relationship")
+        if cached is not None:
+            return cached
+
+        core_memory = await self.get_core_memory(user_id, companion_id)
+        await self._cache_set(user_id, companion_id, core_memory.relationship_block, "relationship")
+        return core_memory.relationship_block
+
     def build_core_prompt(self, core_memory: CoreMemory) -> str:
         """
         组装核心记忆为 system prompt 的一部分
@@ -259,7 +417,7 @@ class CoreMemoryManager:
             response = await self.llm.ainvoke(messages)
             return response.content.strip()[:200]
         except Exception as e:
-            print(f"[CoreMemory] 生成用户画像失败: {e}")
+            logger.error(f"[CoreMemory] 生成用户画像失败: {e}")
             return memories_text[:200]
     
     async def _get_from_db(self, user_id: int, companion_id: int) -> Optional[CoreMemory]:
@@ -289,7 +447,7 @@ class CoreMemoryManager:
                 )
             return None
         except Exception as e:
-            print(f"[CoreMemory] 从数据库获取失败: {e}")
+            logger.error(f"[CoreMemory] 从数据库获取失败: {e}")
             return None
     
     async def _save_to_db(self, core_memory: CoreMemory) -> bool:
@@ -323,7 +481,7 @@ class CoreMemoryManager:
             # 注意：不在这里调用 commit，由上层事务管理
             return True
         except Exception as e:
-            print(f"[CoreMemory] 保存到数据库失败: {e}")
+            logger.error(f"[CoreMemory] 保存到数据库失败: {e}")
             # 尝试回滚事务
             try:
                 await self.session.rollback()

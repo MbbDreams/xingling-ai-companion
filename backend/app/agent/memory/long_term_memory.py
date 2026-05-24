@@ -11,7 +11,8 @@
 4. 时间衰减和重要性加权
 """
 
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,60 @@ from pydantic import BaseModel
 from app.models import Memory
 from app.agent.memory.embedder import Embedder, get_embedder
 from app.agent.models import MemoryType
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryMetrics:
+    """记忆系统运行指标监控"""
+
+    def __init__(self):
+        self._total_stored: int = 0
+        self._total_retrieved: int = 0
+        self._total_retrieval_results: int = 0
+        self._total_similarity_scores: float = 0.0
+
+    def record_store(self) -> None:
+        """记录一次存储操作"""
+        self._total_stored += 1
+
+    def record_retrieval(self, result_count: int, similarity_scores: list[float]) -> None:
+        """
+        记录一次检索操作
+
+        Args:
+            result_count: 本次检索返回的结果数
+            similarity_scores: 本次检索的相似度分数列表
+        """
+        self._total_retrieved += 1
+        self._total_retrieval_results += result_count
+        self._total_similarity_scores += sum(similarity_scores)
+
+    def get_metrics(self) -> dict:
+        """
+        获取当前指标
+
+        Returns:
+            包含所有运行指标的字典
+        """
+        avg_results = (
+            self._total_retrieval_results / self._total_retrieved
+            if self._total_retrieved > 0
+            else 0.0
+        )
+        total_scores_count = (
+            self._total_retrieval_results
+            if self._total_retrieval_results > 0
+            else 1
+        )
+        avg_similarity = self._total_similarity_scores / total_scores_count
+
+        return {
+            "total_stored": self._total_stored,
+            "total_retrieved": self._total_retrieved,
+            "avg_retrieval_results": round(avg_results, 2),
+            "avg_similarity_score": round(avg_similarity, 4),
+        }
 
 
 class MemoryEntry(BaseModel):
@@ -59,6 +114,7 @@ class LongTermMemoryManager:
         """
         self.session = session
         self.embedder = embedder or get_embedder()
+        self.metrics = MemoryMetrics()
     
     async def store_memory(
         self,
@@ -103,17 +159,31 @@ class LongTermMemoryManager:
                 if merged:
                     return None  # 已合并，不创建新记录
             
-            # 插入新记忆
-            result = await self.session.execute(
-                text("""
+            # 插入新记忆 - 使用字符串拼接避免 asyncpg 参数绑定问题
+            if embedding:
+                embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+                sql = f"""
                     INSERT INTO memories 
                         (user_id, companion_id, source_message_id, memory, category, 
                          importance, embedding, memory_type, source, created_at)
                     VALUES 
                         (:user_id, :companion_id, :source_message_id, :memory, :category,
-                         :importance, :embedding::vector, :memory_type, :source, NOW())
+                         :importance, '{embedding_str}'::vector, :memory_type, :source, NOW())
                     RETURNING id
-                """),
+                """
+            else:
+                sql = """
+                    INSERT INTO memories 
+                        (user_id, companion_id, source_message_id, memory, category, 
+                         importance, embedding, memory_type, source, created_at)
+                    VALUES 
+                        (:user_id, :companion_id, :source_message_id, :memory, :category,
+                         :importance, NULL, :memory_type, :source, NOW())
+                    RETURNING id
+                """
+            
+            result = await self.session.execute(
+                text(sql),
                 {
                     "user_id": user_id,
                     "companion_id": companion_id,
@@ -121,7 +191,6 @@ class LongTermMemoryManager:
                     "memory": content.strip(),
                     "category": memory_type,
                     "importance": importance,
-                    "embedding": str(embedding) if embedding else None,
                     "memory_type": memory_type,
                     "source": source,
                 }
@@ -130,10 +199,14 @@ class LongTermMemoryManager:
             memory_id = result.scalar()
             await self.session.commit()
             
+            # 更新指标
+            self.metrics.record_store()
+            logger.info(f"[LongTermMemory] 存储记忆成功, id={memory_id}")
+            
             return memory_id
             
         except Exception as e:
-            print(f"[LongTermMemory] 存储记忆失败: {e}")
+            logger.error(f"[LongTermMemory] 存储记忆失败: {e}")
             return None
     
     async def retrieve_memories(
@@ -174,23 +247,25 @@ class LongTermMemoryManager:
             return await self._keyword_search(user_id, query, limit)
         
         try:
-            # 向量相似度搜索
+            # 向量相似度搜索 - 使用字符串拼接避免 asyncpg 参数绑定问题
+            # pgvector 的 <=> 操作符需要直接使用向量字面量
+            embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+            
             result = await self.session.execute(
-                text("""
+                text(f"""
                     SELECT id, user_id, memory, category, importance, source, 
                            created_at, recall_count,
-                           1 - (embedding <=> :query_embedding::vector) AS similarity
+                           1 - (embedding <=> '{embedding_str}'::vector) AS similarity
                     FROM memories
                     WHERE user_id = :user_id
                       AND embedding IS NOT NULL
                       AND (expires_at IS NULL OR expires_at > NOW())
-                    ORDER BY embedding <=> :query_embedding::vector
-                    LIMIT :limit * 2
+                    ORDER BY embedding <=> '{embedding_str}'::vector
+                    LIMIT :limit_val
                 """),
                 {
                     "user_id": user_id,
-                    "query_embedding": str(query_embedding),
-                    "limit": limit,
+                    "limit_val": limit * 2,
                 }
             )
             
@@ -198,8 +273,12 @@ class LongTermMemoryManager:
             
             # 计算综合得分并排序
             scored_memories = []
+            similarity_scores = []
             for row in rows:
                 memory_id, uid, content, category, importance, source, created_at, recall_count, similarity = row
+                
+                # 记录相似度分数
+                similarity_scores.append(similarity)
                 
                 # 时间新鲜度得分
                 recency_score = self._calculate_recency_score(created_at)
@@ -237,10 +316,19 @@ class LongTermMemoryManager:
             for _, memory in scored_memories[:limit]:
                 await self._update_recall_count(memory.id)
             
-            return [m for _, m in scored_memories[:limit]]
+            result_memories = [m for _, m in scored_memories[:limit]]
+            
+            # 更新检索指标
+            self.metrics.record_retrieval(len(result_memories), similarity_scores)
+            logger.info(
+                f"[LongTermMemory] 检索完成, 返回 {len(result_memories)} 条结果, "
+                f"候选 {len(rows)} 条"
+            )
+            
+            return result_memories
             
         except Exception as e:
-            print(f"[LongTermMemory] 向量检索失败: {e}")
+            logger.error(f"[LongTermMemory] 向量检索失败: {e}")
             return await self._keyword_search(user_id, query, limit)
     
     async def get_user_memories_by_type(
@@ -296,7 +384,7 @@ class LongTermMemoryManager:
             ]
             
         except Exception as e:
-            print(f"[LongTermMemory] 获取类型记忆失败: {e}")
+            logger.error(f"[LongTermMemory] 获取类型记忆失败: {e}")
             return []
     
     async def get_user_summary(self, user_id: int) -> str:
@@ -325,6 +413,19 @@ class LongTermMemoryManager:
         
         return "\n".join(parts)
     
+    def get_metrics(self) -> dict:
+        """
+        获取记忆系统运行指标
+
+        Returns:
+            包含以下指标的字典：
+            - total_stored: 总存储数
+            - total_retrieved: 总检索次数
+            - avg_retrieval_results: 平均检索结果数
+            - avg_similarity_score: 平均相似度分数
+        """
+        return self.metrics.get_metrics()
+    
     def _calculate_recency_score(self, created_at: datetime) -> float:
         """
         计算时间新鲜度得分
@@ -336,7 +437,6 @@ class LongTermMemoryManager:
             新鲜度得分 [0, 1]
         """
         # 处理时区
-        from datetime import timezone
         now = datetime.now(timezone.utc)
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
@@ -371,19 +471,20 @@ class LongTermMemoryManager:
             是否已合并
         """
         try:
-            # 查找相似记忆
+            # 查找相似记忆 - 使用字符串拼接避免 asyncpg 参数绑定问题
+            embedding_str = "[" + ",".join(str(x) for x in new_embedding) + "]"
+            
             result = await self.session.execute(
-                text("""
+                text(f"""
                     SELECT id, memory, importance, 
-                           1 - (embedding <=> :embedding::vector) AS similarity
+                           1 - (embedding <=> '{embedding_str}'::vector) AS similarity
                     FROM memories
                     WHERE user_id = :user_id AND embedding IS NOT NULL
-                    ORDER BY embedding <=> :embedding::vector
+                    ORDER BY embedding <=> '{embedding_str}'::vector
                     LIMIT 1
                 """),
                 {
                     "user_id": user_id,
-                    "embedding": str(new_embedding),
                 }
             )
             
@@ -421,7 +522,7 @@ class LongTermMemoryManager:
             return True
             
         except Exception as e:
-            print(f"[LongTermMemory] 合并记忆失败: {e}")
+            logger.error(f"[LongTermMemory] 合并记忆失败: {e}")
             return False
     
     async def _update_recall_count(self, memory_id: int) -> None:
@@ -472,7 +573,7 @@ class LongTermMemoryManager:
             ]
             
         except Exception as e:
-            print(f"[LongTermMemory] 获取重要记忆失败: {e}")
+            logger.error(f"[LongTermMemory] 获取重要记忆失败: {e}")
             return []
     
     async def _keyword_search(
@@ -525,5 +626,5 @@ class LongTermMemoryManager:
             ]
             
         except Exception as e:
-            print(f"[LongTermMemory] 关键词检索失败: {e}")
+            logger.error(f"[LongTermMemory] 关键词检索失败: {e}")
             return []

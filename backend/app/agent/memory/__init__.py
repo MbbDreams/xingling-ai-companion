@@ -10,7 +10,7 @@
 - Embedder: 向量化服务
 """
 
-from .embedder import Embedder
+from .embedder import Embedder, get_embedder, create_embedder
 from .core_memory import CoreMemoryManager
 from .working_memory import WorkingMemoryManager
 from .long_term_memory import LongTermMemoryManager
@@ -19,6 +19,8 @@ from .memory_maintenance import MemoryMaintenance
 
 __all__ = [
     "Embedder",
+    "get_embedder",
+    "create_embedder",
     "CoreMemoryManager",
     "WorkingMemoryManager",
     "LongTermMemoryManager",

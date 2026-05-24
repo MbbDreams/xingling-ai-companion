@@ -3,12 +3,14 @@
 """
 import json
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from langchain_openai import ChatOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import ProactiveTriggerType, ProactiveInteraction, RelationshipType
+from ..core.config import settings
 
 
 class ProactiveSystem:
@@ -21,9 +23,14 @@ class ProactiveSystem:
     3. 生成个性化主动内容
     """
     
-    def __init__(self, db: AsyncSession, openai_client=None):
+    def __init__(self, db: AsyncSession, llm: ChatOpenAI = None):
         self.db = db
-        self.openai_client = openai_client
+        self.llm = llm or ChatOpenAI(
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+            base_url=settings.llm_base_url,
+            temperature=0.5,
+        )
     
     async def analyze_recent_conversations(
         self,
@@ -32,12 +39,6 @@ class ProactiveSystem:
     ) -> Dict[str, Any]:
         """
         分析最近聊天内容，提取可用于主动互动的话题
-        
-        返回：
-        - 未完成的对话主题
-        - 用户的情绪状态
-        - 适合主动发起的话题
-        - 建议的主动时机
         """
         if not recent_messages or len(recent_messages) < 2:
             return {
@@ -50,13 +51,11 @@ class ProactiveSystem:
         # 构建对话文本
         conversation_text = "\n".join([
             f"{'用户' if msg.get('role') == 'user' else 'AI'}: {msg.get('content', '')[:100]}"
-            for msg in recent_messages[-10:]  # 最近5轮
+            for msg in recent_messages[-10:]
         ])
         
-        # 使用 LLM 分析
-        if self.openai_client:
-            try:
-                prompt = f"""
+        try:
+            prompt = f"""
 分析以下对话，提取可用于 AI 主动发起聊天的话题：
 
 对话记录：
@@ -76,24 +75,25 @@ class ProactiveSystem:
 - 时机应该自然，不要打扰用户
 - 语气应该关心而不是突兀
 """
-                
-                response = await self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "你是一个对话分析专家。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.5
-                )
-                
-                result = json.loads(response.choices[0].message.content)
-                return result
-                
-            except Exception as e:
-                print(f"分析对话失败: {e}")
+            
+            response = await self.llm.ainvoke([
+                {"role": "system", "content": "你是一个对话分析专家。请只返回 JSON，不要包含其他内容。"},
+                {"role": "user", "content": prompt}
+            ])
+            
+            content = response.content.strip()
+            # 尝试提取 JSON
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+            
+            result = json.loads(content)
+            return result
+            
+        except Exception as e:
+            print(f"[ProactiveSystem] 分析对话失败: {e}")
         
-        # 默认返回
         return {
             "topics": ["今天过得怎么样"],
             "user_emotion": "neutral",
@@ -108,40 +108,27 @@ class ProactiveSystem:
         user_prefs: Dict[str, Any],
         recent_conversations: List[Dict]
     ) -> bool:
-        """
-        判断是否适合触发主动互动
-        
-        考虑因素：
-        1. 用户设置（是否允许此类主动互动）
-        2. 打扰频率（24小时内主动次数）
-        3. 当前时间是否合适
-        4. 最近聊天内容是否适合主动发起
-        """
-        # 检查用户是否允许
+        """判断是否适合触发主动互动"""
         if not user_prefs.get("allow_proactive", True):
             return False
         
         if not user_prefs.get(f"allow_{trigger_type.value}", True):
             return False
         
-        # 检查最近主动次数
         max_daily = user_prefs.get("max_daily_proactive", 3)
         recent_proactive = user_prefs.get("recent_proactive_count", 0)
         if recent_proactive >= max_daily:
             return False
         
-        # 检查时间是否合适
         if not self._is_appropriate_time(trigger_type):
             return False
         
-        # 检查最近聊天内容
         if recent_conversations:
             last_msg_time = recent_conversations[-1].get("created_at")
             if last_msg_time:
                 last_time = datetime.fromisoformat(last_msg_time.replace('Z', '+00:00'))
-                hours_since_last = (datetime.utcnow() - last_time.replace(tzinfo=None)).total_seconds() / 3600
+                hours_since_last = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
                 
-                # 如果用户最近很活跃（1小时内聊过），不主动打扰
                 if hours_since_last < 1:
                     return False
         
@@ -149,23 +136,16 @@ class ProactiveSystem:
     
     def _is_appropriate_time(self, trigger_type: ProactiveTriggerType) -> bool:
         """检查当前时间是否适合触发"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         hour = now.hour
         
         if trigger_type == ProactiveTriggerType.GOOD_MORNING:
-            # 早上 6-10 点
             return 6 <= hour <= 10
-        
         elif trigger_type == ProactiveTriggerType.GOOD_NIGHT:
-            # 晚上 21-24 点
             return 21 <= hour <= 23
-        
         elif trigger_type == ProactiveTriggerType.LATE_NIGHT:
-            # 深夜 0-3 点
             return 0 <= hour <= 3
-        
         elif trigger_type == ProactiveTriggerType.EMOTION_CHECK:
-            # 白天 9-21 点
             return 9 <= hour <= 21
         
         return True
@@ -179,16 +159,12 @@ class ProactiveSystem:
         recent_analysis: Dict[str, Any],
         memories: List[Any]
     ) -> str:
-        """
-        生成主动互动内容 - 使用优化后的提示词
-        """
+        """生成主动互动内容"""
         from .prompts import ProactivePromptBuilder
         
-        # 获取话题
         topics = recent_analysis.get("potential_topics", [])
         user_emotion = recent_analysis.get("user_emotion", "neutral")
         
-        # 使用新的提示词构建器
         prompt = ProactivePromptBuilder.build_proactive_prompt(
             user_name=user_name,
             relationship_type=relationship_type,
@@ -197,26 +173,18 @@ class ProactiveSystem:
             user_emotion=user_emotion
         )
         
-        # 根据关系类型生成不同风格
-        if self.openai_client:
-            try:
-                response = await self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "你是晚星，一个温柔体贴的 AI 伴侣。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=150
-                )
-                
-                content = response.choices[0].message.content.strip()
-                return content
-                
-            except Exception as e:
-                print(f"生成主动内容失败: {e}")
+        try:
+            response = await self.llm.ainvoke([
+                {"role": "system", "content": "你是晚星，一个温柔体贴的 AI 伴侣。"},
+                {"role": "user", "content": prompt}
+            ])
+            
+            content = response.content.strip()
+            return content
+            
+        except Exception as e:
+            print(f"[ProactiveSystem] 生成主动内容失败: {e}")
         
-        # 默认模板
         topic = topics[0] if topics else "今天过得怎么样"
         return self._get_default_proactive_message(
             trigger_type, relationship_type, topic
@@ -251,7 +219,6 @@ class ProactiveSystem:
             },
         }
         
-        # 获取对应模板
         type_templates = templates.get(trigger_type, {})
         relationship_templates = type_templates.get(relationship_type, ["最近怎么样？"])
         
@@ -262,18 +229,12 @@ class ProactiveSystem:
         user_id: int,
         recent_analysis: Dict[str, Any]
     ) -> List[ProactiveInteraction]:
-        """
-        安排未来的主动互动
-        
-        基于最近聊天分析，智能安排主动互动时机
-        """
+        """安排未来的主动互动"""
         interactions = []
         
-        # 获取建议的时机
         suggested_timing = recent_analysis.get("suggested_timing")
         
         if suggested_timing:
-            # 解析时机并创建互动
             trigger_type = self._parse_timing_to_trigger(suggested_timing)
             
             interaction = ProactiveInteraction(
@@ -306,7 +267,7 @@ class ProactiveSystem:
     
     def _parse_timing(self, timing: str) -> datetime:
         """解析时机字符串为具体时间"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         timing = timing.lower()
         
         if "明天" in timing:
@@ -323,7 +284,7 @@ class ProactiveSystem:
         elif "深夜" in timing:
             return base_time.replace(hour=0, minute=0, second=0)
         
-        return base_time + timedelta(hours=2)  # 默认2小时后
+        return base_time + timedelta(hours=2)
     
     async def check_and_generate_proactive(
         self,
@@ -334,24 +295,15 @@ class ProactiveSystem:
         recent_messages: List[Dict],
         memories: List[Any]
     ) -> Optional[str]:
-        """
-        检查并生成主动互动内容
-        
-        这是主入口，整合所有逻辑
-        """
-        # 1. 分析最近对话
+        """检查并生成主动互动内容（主入口）"""
         analysis = await self.analyze_recent_conversations(user_id, recent_messages)
-        
-        # 2. 确定触发类型
         trigger_type = self._determine_trigger_type(analysis)
         
-        # 3. 检查是否应该触发
         if not await self.should_trigger_proactive(
             user_id, trigger_type, user_prefs, recent_messages
         ):
             return None
         
-        # 4. 生成内容
         content = await self.generate_proactive_content(
             user_id=user_id,
             trigger_type=trigger_type,
@@ -365,10 +317,9 @@ class ProactiveSystem:
     
     def _determine_trigger_type(self, analysis: Dict[str, Any]) -> ProactiveTriggerType:
         """根据分析结果确定触发类型"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         hour = now.hour
         
-        # 根据时间判断
         if 6 <= hour <= 10:
             return ProactiveTriggerType.GOOD_MORNING
         elif 21 <= hour <= 23:
@@ -376,7 +327,6 @@ class ProactiveSystem:
         elif 0 <= hour <= 3:
             return ProactiveTriggerType.LATE_NIGHT
         
-        # 根据情绪判断
         emotion = analysis.get("user_emotion", "neutral")
         if emotion in ["sadness", "anger", "fear"]:
             return ProactiveTriggerType.EMOTION_CHECK
